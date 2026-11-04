@@ -28,11 +28,11 @@
 MD_MAX72XX mx = MD_MAX72XX(HARDWARE_TYPE, CS_PIN, MAX_DEVICES);
 
 // WiFi 預設連線帳密
-char sta_ssid[32] = "SAMPO_STAFF";
-char sta_password[64] = "066018688";
+char sta_ssid[32] = "SSID";
+char sta_password[64] = "12345678";
 
 // AP 模式設定
-const char* ap_ssid = "ESP32-C3-Setup";
+const char* ap_ssid = "ESP32-C3-Clock";
 const char* ap_password = "";
 
 enum WiFiModeState { MODE_CONNECTING, MODE_STA, MODE_AP };
@@ -73,8 +73,7 @@ const uint32_t DOOR_CHECK_INTERVAL = 60000; // 每一分鐘檢查一次
 int posX = 0;
 int posY = 0;
 int dirX = 1;
-int dirY = 0; // 上下不晃出螢幕
-int textWidth = 27; // HH:MM 寬度約 27 像素
+int textWidth = 27;
 
 // ==========================================
 // 網頁 UI
@@ -173,14 +172,23 @@ String getSTAWebPage()
 }
 
 // ==========================================
-// 點陣圖形字型繪製 (緊湊字距 + 邊緣警示)
+// 點陣圖形字型繪製 (支援旋轉 180 度)
 // ==========================================
+void setPixelRotated180(int r, int c, bool state)
+{
+  // 旋轉 180 度：Row 倒轉 (7 - r)，Col 倒轉 (31 - c)
+  // mx.setPoint(row, col, true)
+  if (r >= 0 && r < 8 && c >= 0 && c < 32)
+  {
+    mx.setPoint(7 - r, 31 - c, state);
+  }
+}
+
 int drawCompactChar(char c, int offsetX, int offsetY)
 {
   uint8_t charBuf[8];
   uint8_t charWidth = mx.getChar(c, sizeof(charBuf), charBuf);
   
-  // 找出該字元實際使用的寬度（去除字型緩衝區右側全空白的直列）
   int actualWidth = charWidth;
   while (actualWidth > 1 && charBuf[actualWidth - 1] == 0) {
     actualWidth--;
@@ -199,7 +207,7 @@ int drawCompactChar(char c, int offsetX, int offsetY)
         {
           if ((colPattern >> (7 - row)) & 0x01)
           {
-            mx.setPoint(screenRow, screenCol, true);
+            setPixelRotated180(screenRow, screenCol, true);
           }
         }
       }
@@ -213,23 +221,23 @@ void renderTimeString(const char* str, int ox, int oy)
   mx.control(MD_MAX72XX::UPDATE, MD_MAX72XX::OFF);
   mx.clear();
   
-  // 1. 繪製 HH:MM 時間字串 (字元間隔縮短為 1 像素)
+  // 1. 繪製 HH:MM 時間字串 (經由 setPixelRotated180 自動旋轉 180 度)
   int currX = ox;
   while (*str)
   {
     int w = drawCompactChar(*str, currX, oy);
-    currX += w + 1; // 間距縮小為 1 像素
+    currX += w + 1;
     str++;
   }
   textWidth = currX - ox;
 
-  // 2. 當門開啟 (door == "open") 時，最左 (第0欄) 與最右 (第31欄) 一整行全亮
+  // 2. 當門開啟時，最左 (第0欄) 與最右 (第31欄) 全亮 (旋轉後位置不變)
   if (doorIsOpen)
   {
     for (int r = 0; r < 8; r++)
     {
-      mx.setPoint(r, 0, true);   // 最左行全亮
-      mx.setPoint(r, 31, true);  // 最右行全亮
+      setPixelRotated180(r, 0, true);
+      setPixelRotated180(r, 31, true);
     }
   }
   
@@ -258,7 +266,7 @@ void updateBrightnessMode(int currentHour)
   }
 }
 
-// 飄移更新邏輯 (限制在 32 像素可見範圍內)
+// 飄移更新邏輯
 void updateDriftDisplay()
 {
   if (millis() - lastDriftTime < driftSpeed) return;
@@ -269,7 +277,7 @@ void updateDriftDisplay()
   if (getLocalTime(&timeinfo, 50))
   {
     updateBrightnessMode(timeinfo.tm_hour);
-    strftime(timeBuf, sizeof(timeBuf), "%H:%M", &timeinfo); // 格式改為 hh:mm
+    strftime(timeBuf, sizeof(timeBuf), "%H:%M", &timeinfo);
   }
   else
   {
@@ -283,18 +291,16 @@ void updateDriftDisplay()
     }
   }
 
-  // 若門開啟，最左與最右邊緣各佔 1 欄，飄移有效寬度縮為 1~30
   int minLimitX = doorIsOpen ? 1 : 0;
   int maxLimitX = (doorIsOpen ? 31 : 32) - textWidth;
 
   if (maxLimitX < minLimitX) maxLimitX = minLimitX;
 
-  // 限制左右飄移不跑出可視區
   posX += dirX;
   if (posX >= maxLimitX) { posX = maxLimitX; dirX = -1; }
   if (posX <= minLimitX) { posX = minLimitX; dirX = 1; }
 
-  posY = 0; // 高度固定填滿 8 點不上下移出畫面
+  posY = 0;
 
   renderTimeString(timeBuf, posX, posY);
 }
@@ -314,7 +320,7 @@ void checkDoorStatus()
 
     HTTPClient http;
     http.begin(doorStatusUrl);
-    http.setTimeout(3000); // 3 秒超時
+    http.setTimeout(3000);
     int httpCode = http.GET();
 
     if (httpCode == HTTP_CODE_OK)
@@ -322,11 +328,10 @@ void checkDoorStatus()
       String payload = http.getString();
       PRINT("\n[HTTP] 回傳內容: ", payload);
 
-      // 解析回傳 JSON 是否包含 open
       if (payload.indexOf("\"door\"") >= 0 && payload.indexOf("\"open\"") >= 0)
       {
         doorIsOpen = true;
-        PRINTS("\n[Door] 門狀態: OPEN (警告燈已開啟)");
+        PRINTS("\n[Door] 門狀態: OPEN");
       }
       else
       {
@@ -364,7 +369,7 @@ void checkWiFi()
       currentMode = MODE_STA;
       PRINTS("\n[WiFi] STA 連線成功！");
       configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-      lastDoorCheckTime = 0; // 連線成功後立刻發起一次查詢
+      lastDoorCheckTime = 0;
     }
     else if (millis() - connectTimer >= STA_TIMEOUT)
     {
@@ -441,7 +446,7 @@ void handleClientRequests()
       client.stop();
       return;
     }
-    // 3. STA 模式夜間時段表單更新
+    // 3. STA 模式夜間時段更新
     else if (req.indexOf("GET /setNight?") >= 0)
     {
       int sIdx = req.indexOf("start=");
@@ -455,7 +460,7 @@ void handleClientRequests()
       client.stop();
       return;
     }
-    // 4. STA 模式設定門禁網址
+    // 4. STA 模式門禁網址設定
     else if (req.indexOf("GET /setDoor?url=") >= 0)
     {
       int uIdx = req.indexOf("url=");
@@ -463,18 +468,16 @@ void handleClientRequests()
       if (endIdx < 0) endIdx = req.indexOf(" ", uIdx);
       String uStr = req.substring(uIdx + 4, endIdx);
       
-      // 簡易解碼 URL
       uStr.replace("%3A", ":");
       uStr.replace("%2F", "/");
       uStr.toCharArray(doorStatusUrl, sizeof(doorStatusUrl));
       
-      lastDoorCheckTime = 0; // 儲存後立即強制觸發一次輪詢
+      lastDoorCheckTime = 0;
       client.print("HTTP/1.1 200 OK\r\n\r\nOK");
       client.stop();
       return;
     }
 
-    // 回應主要網頁
     client.print("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n");
     if (currentMode == MODE_AP) {
       client.print(getAPWebPage());
@@ -490,7 +493,7 @@ void setup(void)
 {
   Serial.begin(115200);
   delay(500);
-  PRINTS("\n=== ESP32-C3 LED 矩陣時鐘啟動 ===");
+  PRINTS("\n=== ESP32-C3 LED 矩陣時鐘啟動 (旋轉 180 度) ===");
 
   mx.begin();
   mx.control(MD_MAX72XX::INTENSITY, dayBrightness);
