@@ -368,6 +368,7 @@ void checkWiFi()
     {
       currentMode = MODE_STA;
       PRINTS("\n[WiFi] STA 連線成功！");
+      PRINT("\n[WiFi] 取得 IP 位址: ", WiFi.localIP().toString());
       configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
       lastDoorCheckTime = 0;
     }
